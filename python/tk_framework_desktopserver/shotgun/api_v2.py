@@ -1805,16 +1805,30 @@ class ShotgunAPI(object):
         uncached_ids = [pc_id for pc_id in pc_ids if pc_id not in avoided_cache]
 
         if uncached_ids:
-            rows = self._engine.shotgun.find(
-                "PipelineConfiguration",
-                [["id", "in", uncached_ids]],
-                ["sg_avoid_web_menu"],
-            )
+            try:
+                rows = self._engine.shotgun.find(
+                    "PipelineConfiguration",
+                    [["id", "in", uncached_ids]],
+                    ["sg_avoid_web_menu"],
+                )
+            except Exception:
+                # Fail safe: if the query itself fails for any reason (most
+                # likely the sg_avoid_web_menu field no longer exists in the
+                # site's schema, e.g. someone deleted it), don't let that take
+                # down the whole web menu - just don't exclude anything, which
+                # is the same behavior as if this feature didn't exist at all.
+                logger.warning(
+                    "Failed to query sg_avoid_web_menu - treating all pending "
+                    "pipeline configurations as not avoided.",
+                    exc_info=True,
+                )
+                rows = []
+
             rows_by_id = dict((row["id"], row) for row in rows)
 
             for pc_id in uncached_ids:
                 row = rows_by_id.get(pc_id)
-                avoided_cache[pc_id] = bool(row.get("sg_avoid_web_menu")) if row else False
+                avoided_cache[pc_id] = bool(row.get("sg_avoid_web_menu", False)) if row else False
 
         filtered_configs = [
             pc
