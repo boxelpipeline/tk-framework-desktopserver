@@ -77,6 +77,7 @@ class ShotgunAPI(object):
     CONFIG_DATA = "config_data"
     SOFTWARE_ENTITIES = "software_entities"
     ENTITY_TYPE_WHITELIST = "entity_type_whitelist"
+    WEB_MENU_AVOIDED_CONFIGS = "web_menu_avoided_configs"
     LEGACY_PROJECT_ACTIONS = "legacy_project_actions"
     YML_FILE_DATA = "yml_file_data"
     ENTITY_PARENT_PROJECTS = "entity_parent_projects"
@@ -1639,6 +1640,9 @@ class ShotgunAPI(object):
                 manager,
                 project_entity,
             )
+            pipeline_configs = self._filter_web_menu_avoided_configs(
+                pipeline_configs
+            )
 
             # If there are no configs that we got back, then we just operate on
             # a dummy "Primary" entity with no id. This will cause the manager
@@ -1766,6 +1770,66 @@ class ShotgunAPI(object):
         # any destructive operations on the contents won't bubble up to the
         # cache.
         return copy.deepcopy(pc_data[project["id"]])
+
+    @sgtk.LogManager.log_timing
+    def _filter_web_menu_avoided_configs(self, pipeline_configs):
+        """
+        Filters out pipeline configurations that have been explicitly opted
+        out of browser-integration processing via the "sg_avoid_web_menu"
+        checkbox field on PipelineConfiguration.
+
+        A missing field, a missing row (e.g. a dummy/no-id config) or an
+        explicit False all mean "keep processing this config" - only an
+        explicit True excludes it. This makes the field purely additive: a
+        site that has never set it behaves exactly as before.
+
+        Excluding a config here means it never reaches the entity-type
+        whitelist check or the caching subprocess for it at all - unlike a
+        config that fails to resolve an environment and gets cached as an
+        empty result, this skips even the one-time cost of populating that
+        cache entry in the first place.
+
+        :param list pipeline_configs: List of PipelineConfiguration
+            dictionaries as returned by :meth:`_get_pipeline_configurations`.
+
+        :returns: The filtered list of PipelineConfiguration dictionaries.
+        :rtype: list
+        """
+        pc_ids = [pc["id"] for pc in pipeline_configs if pc.get("id")]
+        if not pc_ids:
+            return pipeline_configs
+
+        self._cache.setdefault(self.WEB_MENU_AVOIDED_CONFIGS, dict())
+        avoided_cache = self._cache[self.WEB_MENU_AVOIDED_CONFIGS]
+
+        uncached_ids = [pc_id for pc_id in pc_ids if pc_id not in avoided_cache]
+
+        if uncached_ids:
+            rows = self._engine.shotgun.find(
+                "PipelineConfiguration",
+                [["id", "in", uncached_ids]],
+                ["sg_avoid_web_menu"],
+            )
+            rows_by_id = dict((row["id"], row) for row in rows)
+
+            for pc_id in uncached_ids:
+                row = rows_by_id.get(pc_id)
+                avoided_cache[pc_id] = bool(row.get("sg_avoid_web_menu")) if row else False
+
+        filtered_configs = [
+            pc
+            for pc in pipeline_configs
+            if pc.get("id") is None or not avoided_cache.get(pc["id"], False)
+        ]
+
+        if len(filtered_configs) != len(pipeline_configs):
+            logger.debug(
+                "Excluded %s of %s pipeline configuration(s) via sg_avoid_web_menu.",
+                len(pipeline_configs) - len(filtered_configs),
+                len(pipeline_configs),
+            )
+
+        return filtered_configs
 
     @sgtk.LogManager.log_timing
     def _get_site_state_data(self):
