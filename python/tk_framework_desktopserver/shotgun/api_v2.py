@@ -640,6 +640,7 @@ class ShotgunAPI(object):
                 if decoded_data is not None:
                     # Cache hit.
                     cached_contents_hash = cached_data[1]
+                    descriptor = pc_data.get("descriptor")
 
                     # We check the validity of the cache asynchronously in this
                     # situation. We want to go ahead and return the list of actions
@@ -648,11 +649,21 @@ class ShotgunAPI(object):
                     # this one invokation of get_actions returns old data, but all
                     # future requests will be correct until the next time the cache
                     # must be invalidated.
-                    self._async_check_and_cache_actions(
-                        data,
-                        pc_data,
-                        cached_contents_hash,
-                    )
+                    #
+                    # An immutable (published) config can only change by being
+                    # published as a new version, which produces a brand new
+                    # lookup_hash and therefore a fresh cache miss on its own -
+                    # there's nothing to revalidate in place for it, so we skip
+                    # this entirely once cached. Mutable (dev) configs are the
+                    # ones actively being diagnosed/edited, so they keep the
+                    # background revalidation - that's the intended difference
+                    # in behavior between "live" dev configs and cached ones.
+                    if descriptor is None or not descriptor.is_immutable():
+                        self._async_check_and_cache_actions(
+                            data,
+                            pc_data,
+                            cached_contents_hash,
+                        )
 
                     logger.debug("Cached contents hash is %s", cached_contents_hash)
                     logger.debug("Cache key was %s", lookup_hash)
@@ -963,16 +974,27 @@ class ShotgunAPI(object):
             logger.debug("Command stdout: %s", stdout)
             logger.debug("Command stderr: %s", stderr)
         elif retcode == constants.UNRESOLVED_ENV_ERROR_EXIT_CORE:
-            logger.debug("Caching process was not able to resolve an environment.")
-            msg = (
-                "Could not resolve an environment for '{entity_type}' entity in pipeline configuration "
-                "'{config_name}' with id {config_id}.".format(
-                    entity_type=data["entity_type"],
-                    config_name=config_data["entity"]["name"],
-                    config_id=config_data["entity"]["id"],
-                )
+            # This config genuinely has no environment for this entity type
+            # (e.g. a vendor/consultant config that only ships project-level
+            # environments). That won't change until the config itself is
+            # republished - at which point contents_hash (mutable: yml/py
+            # modtimes, immutable: a new lookup_hash from the new descriptor
+            # version) naturally invalidates this. So we cache an empty
+            # command list instead of raising, which means every future
+            # request for this (config, entity_type) combination is served
+            # straight from the on-disk sqlite cache - no subprocess, no
+            # re-resolution - until something actually changes.
+            logger.debug(
+                "Caching process was not able to resolve an environment for "
+                "'%s' entity in pipeline configuration '%s' with id %s. "
+                "Caching an empty command list so this isn't re-attempted "
+                "until the config changes.",
+                data["entity_type"],
+                config_data["entity"]["name"],
+                config_data["entity"]["id"],
             )
-            raise TankCachingUnresolvedEnvError(msg)
+            self._write_commands_to_db([], config_data, contents_hash)
+            return
         elif retcode == constants.ENGINE_INIT_ERROR_EXIT_CODE:
             logger.debug("Caching subprocess reported a problem during bootstrap.")
             raise TankCachingEngineBootstrapError("%s\n\n%s" % (stdout, stderr))
