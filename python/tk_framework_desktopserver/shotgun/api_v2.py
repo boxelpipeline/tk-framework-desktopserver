@@ -1321,9 +1321,18 @@ class ShotgunAPI(object):
         #     we fall back on querying it when we need to.
         #
         if data.get("project_id") is not None:
+            project_id = data["project_id"]
+            if isinstance(project_id, dict):
+                # Some web app payloads (e.g. a right-click on a
+                # Project entity itself) send project_id as a full
+                # entity dict instead of a plain id, which later
+                # breaks cache lookups that expect a hashable int
+                # (TypeError: unhashable type: 'dict'). Normalize it
+                # here.
+                project_id = project_id["id"]
             project_entity = dict(
                 type="Project",
-                id=data["project_id"],
+                id=project_id,
             )
         else:
             project_entity = None
@@ -1331,9 +1340,12 @@ class ShotgunAPI(object):
         # Single entity passed down from the web app. This is the most common
         # case.
         if "entity_id" in data:
+            entity_id = data["entity_id"]
+            if isinstance(entity_id, dict):
+                entity_id = entity_id["id"]
             entity = dict(
                 type=data["entity_type"],
-                id=data["entity_id"],
+                id=entity_id,
             )
 
             # If we were passed a usable project entity from the web app, we
