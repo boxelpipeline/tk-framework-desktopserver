@@ -1428,7 +1428,13 @@ class ShotgunAPI(object):
             return entity["project"]
 
         if entity["type"] == "Project":
-            return entity
+            # Return a fresh dict, not the same object as `entity`.
+            # Callers do `entity["project"] = project_entity` right
+            # after this - returning `entity` itself here makes that
+            # a self-reference (entity["project"] is entity), which
+            # later raises "Circular reference detected" when the
+            # command's arguments are JSON-serialized.
+            return dict(type="Project", id=entity["id"])
 
         project_cache = self._cache.setdefault(self.ENTITY_PARENT_PROJECTS, dict())
 
